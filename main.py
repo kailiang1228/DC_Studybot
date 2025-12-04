@@ -31,7 +31,8 @@ class StudyBot(commands.Bot):
         # 載入 Cogs
         initial_extensions = [
             'src.cogs.study',
-            'src.cogs.admin'
+            'src.cogs.admin',
+            'src.cogs.help'
         ]
         
         for extension in initial_extensions:
