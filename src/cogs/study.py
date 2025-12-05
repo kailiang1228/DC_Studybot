@@ -3,15 +3,31 @@ from discord import app_commands
 from discord.ext import commands, tasks
 from datetime import datetime, timedelta, timezone
 import os
+import json
 
 from .. import database as db
 from .. import utils
+
+# 載入設定檔
+CONFIG_PATH = "config.json"
+
+def load_config():
+    """載入 config.json"""
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    return {
+        "study_keywords": ["讀", "讀書", "開始", "start"],
+        "rest_keywords": ["休", "休息", "結束", "end", "stop"]
+    }
 
 class Study(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.active_sessions: dict[tuple[int, int], datetime] = {}  # (guild_id, user_id) -> start UTC
+        self.text_sessions: dict[tuple[int, int], datetime] = {}    # 文字頻道觸發的計時 (guild_id, user_id) -> start UTC
         self.announce_channel_id = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))
+        self.config = load_config()
         
         # 啟動定時任務
         self.daily_announce_loop.start()
@@ -106,6 +122,71 @@ class Study(commands.Cog):
     async def on_guild_join(self, guild: discord.Guild):
         if self.announce_channel_id:
             db.set_config(guild.id, self.announce_channel_id)
+
+    def _is_monitor_channel(self, channel) -> bool:
+        """檢查是否為監聽的頻道（從 config.json 讀取）"""
+        monitor_list = self.config.get("monitor_channels", [])
+        for item in monitor_list:
+            # 支援頻道 ID（字串或數字）或頻道名稱
+            if str(channel.id) == str(item):
+                return True
+            if channel.name == item:
+                return True
+        return False
+
+    @commands.Cog.listener()
+    async def on_message(self, message: discord.Message):
+        """監聽文字頻道訊息，偵測讀/休關鍵字"""
+        # 忽略機器人訊息
+        if message.author.bot:
+            return
+        
+        # 檢查是否在伺服器內
+        if message.guild is None:
+            return
+        
+        # 檢查是否為監聽的頻道（從 config.json）
+        if not self._is_monitor_channel(message.channel):
+            return
+        
+        content = message.content.strip()
+        key = (message.guild.id, message.author.id)
+        now = datetime.now(timezone.utc)
+        
+        # 檢查是否為開始讀書關鍵字
+        study_keywords = self.config.get("study_keywords", ["讀", "讀書", "開始", "start"])
+        rest_keywords = self.config.get("rest_keywords", ["休", "休息", "結束", "end", "stop"])
+        
+        # 開始讀書
+        if content in study_keywords:
+            if key in self.text_sessions:
+                # 已經在讀書中
+                start_time = self.text_sessions[key]
+                elapsed = now - start_time
+                await message.reply(
+                    f"你已經在讀書中了！開始時間：<t:{int(start_time.timestamp())}:T>，已經過 {utils.format_hms(int(elapsed.total_seconds()))}",
+                    mention_author=False
+                )
+            else:
+                self.text_sessions[key] = now
+                await message.add_reaction("📚")
+                await message.reply(f"開始計時！加油！ 📖", mention_author=False)
+            return
+        
+        # 結束讀書
+        if content in rest_keywords:
+            if key in self.text_sessions:
+                start = self.text_sessions.pop(key)
+                self._add_interval(message.guild.id, message.author.id, start, now)
+                elapsed = int((now - start).total_seconds())
+                await message.add_reaction("🎉")
+                await message.reply(
+                    f"辛苦了！這次讀書時間：{utils.format_hms(elapsed)} ☕",
+                    mention_author=False
+                )
+            else:
+                await message.reply("你還沒開始讀書喔！先打「讀」開始計時。", mention_author=False)
+            return
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
@@ -211,6 +292,82 @@ class Study(commands.Cog):
             return await interaction.response.send_message("需要『管理伺服器』權限。", ephemeral=True)
         db.set_config(interaction.guild.id, channel.id)
         await interaction.response.send_message(f"已設定公告頻道為 {channel.mention}。", ephemeral=True)
+
+    @app_commands.command(name="add_monitor_channel", description="新增監聽頻道（在此頻道打「讀」「休」可計時）")
+    @app_commands.describe(channel="選擇要監聽的文字頻道")
+    async def cmd_add_monitor_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("需要『管理伺服器』權限。", ephemeral=True)
+        db.add_monitor_channel(interaction.guild.id, channel.id)
+        await interaction.response.send_message(
+            f"已新增監聽頻道 {channel.mention}。\n"
+            f"成員可在此頻道輸入「讀」開始計時，「休」結束計時。",
+            ephemeral=True
+        )
+
+    @app_commands.command(name="remove_monitor_channel", description="移除監聽頻道")
+    @app_commands.describe(channel="選擇要移除的監聽頻道")
+    async def cmd_remove_monitor_channel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        if not interaction.user.guild_permissions.manage_guild:
+            return await interaction.response.send_message("需要『管理伺服器』權限。", ephemeral=True)
+        db.remove_monitor_channel(interaction.guild.id, channel.id)
+        await interaction.response.send_message(f"已移除監聽頻道 {channel.mention}。", ephemeral=True)
+
+    @app_commands.command(name="list_monitor_channels", description="列出所有監聽頻道")
+    async def cmd_list_monitor_channels(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("僅能在伺服器內使用。", ephemeral=True)
+        
+        channel_ids = db.get_monitor_channels(guild.id)
+        if not channel_ids:
+            return await interaction.response.send_message("目前沒有設定任何監聽頻道。", ephemeral=True)
+        
+        channels = []
+        for cid in channel_ids:
+            ch = guild.get_channel(cid)
+            if ch:
+                channels.append(ch.mention)
+            else:
+                channels.append(f"(已刪除的頻道 {cid})")
+        
+        await interaction.response.send_message(
+            f"📢 監聽頻道列表：\n" + "\n".join(f"• {c}" for c in channels),
+            ephemeral=True
+        )
+
+    @app_commands.command(name="study_status", description="查看目前正在讀書的成員")
+    async def cmd_study_status(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        if guild is None:
+            return await interaction.response.send_message("僅能在伺服器內使用。", ephemeral=True)
+        
+        now = datetime.now(timezone.utc)
+        studying = []
+        
+        # 語音讀書中的成員
+        for (gid, uid), start in self.active_sessions.items():
+            if gid == guild.id:
+                member = guild.get_member(uid)
+                name = member.display_name if member else f"User {uid}"
+                elapsed = utils.format_hms(int((now - start).total_seconds()))
+                studying.append(f"🎧 {name} — {elapsed}（語音）")
+        
+        # 文字頻道讀書中的成員
+        for (gid, uid), start in self.text_sessions.items():
+            if gid == guild.id:
+                member = guild.get_member(uid)
+                name = member.display_name if member else f"User {uid}"
+                elapsed = utils.format_hms(int((now - start).total_seconds()))
+                studying.append(f"📚 {name} — {elapsed}（文字）")
+        
+        if not studying:
+            return await interaction.response.send_message("目前沒有人在讀書中。", ephemeral=True)
+        
+        await interaction.response.send_message(
+            "**📖 正在讀書中：**\n" + "\n".join(studying),
+            ephemeral=True
+        )
 
 async def setup(bot):
     await bot.add_cog(Study(bot))

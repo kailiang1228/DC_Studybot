@@ -96,6 +96,57 @@ def set_config(guild_id: int, channel_id: int):
         commit=True
     )
 
+# ------- 訊息監聽頻道設定 -------
+def ensure_monitor_table():
+    """確保 monitor_channels 表存在"""
+    con = sqlite3.connect(DB_PATH)
+    cur = con.cursor()
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS monitor_channels (
+        guild_id   INTEGER NOT NULL,
+        channel_id INTEGER NOT NULL,
+        PRIMARY KEY (guild_id, channel_id)
+    );
+    """)
+    con.commit()
+    con.close()
+
+def get_monitor_channels(guild_id: int) -> list[int]:
+    """取得該伺服器所有監聽的頻道 ID"""
+    ensure_monitor_table()
+    res = db_exec("SELECT channel_id FROM monitor_channels WHERE guild_id = ?", (guild_id,))
+    return [row[0] for row in res]
+
+def add_monitor_channel(guild_id: int, channel_id: int):
+    """新增監聽頻道"""
+    ensure_monitor_table()
+    db_exec(
+        """
+        INSERT OR IGNORE INTO monitor_channels(guild_id, channel_id)
+        VALUES(?, ?)
+        """,
+        (guild_id, channel_id),
+        commit=True
+    )
+
+def remove_monitor_channel(guild_id: int, channel_id: int):
+    """移除監聽頻道"""
+    ensure_monitor_table()
+    db_exec(
+        "DELETE FROM monitor_channels WHERE guild_id = ? AND channel_id = ?",
+        (guild_id, channel_id),
+        commit=True
+    )
+
+def is_monitor_channel(guild_id: int, channel_id: int) -> bool:
+    """檢查是否為監聽頻道"""
+    ensure_monitor_table()
+    res = db_exec(
+        "SELECT 1 FROM monitor_channels WHERE guild_id = ? AND channel_id = ?",
+        (guild_id, channel_id)
+    )
+    return len(res) > 0
+
 # ------- 時段累加（自動切 06:00）-------
 def add_seconds(guild_id: int, user_id: int, study_date: str, seconds: int):
     db_exec(
