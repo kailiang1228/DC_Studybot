@@ -18,7 +18,9 @@ def load_config():
             return json.load(f)
     return {
         "study_keywords": ["讀", "讀書", "開始", "start"],
-        "rest_keywords": ["休", "休息", "結束", "end", "stop"]
+        "rest_keywords": ["休", "休息", "結束", "end", "stop"],
+        "pause_keywords": ["拉", "暫停"],
+        "resume_keywords": ["拉完", "繼續"]
     }
 
 class Study(commands.Cog):
@@ -169,12 +171,30 @@ class Study(commands.Cog):
         key = (message.guild.id, message.author.id)
         now = datetime.now(timezone.utc)
         
-        # 檢查是否為開始讀書關鍵字
+        # 從 config 讀取關鍵字
         study_keywords = self.config.get("study_keywords", ["讀", "讀書", "開始", "start"])
         rest_keywords = self.config.get("rest_keywords", ["休", "休息", "結束", "end", "stop"])
+        pause_keywords = self.config.get("pause_keywords", ["拉", "暫停"])
+        resume_keywords = self.config.get("resume_keywords", ["拉完", "爽", "繼續"])
         
         # 開始讀書
         if content in study_keywords:
+            # 檢查是否有暫停的計時
+            paused = db.get_paused_session(message.guild.id, message.author.id, "text")
+            if paused:
+                # 恢復暫停的計時
+                pause_time_iso, accumulated_secs = paused
+                self.text_sessions[key] = now
+                db.delete_paused_session(message.guild.id, message.author.id, "text")
+                db.save_session(message.guild.id, message.author.id, "text", now.isoformat())
+                # 存儲累積時間在記憶體
+                if not hasattr(self, 'accumulated_text_time'):
+                    self.accumulated_text_time = {}
+                self.accumulated_text_time[key] = accumulated_secs
+                await message.add_reaction("📚")
+                await message.reply(f"繼續讀書！已累積 {utils.format_hms(accumulated_secs)} 📖", mention_author=False)
+                return
+            
             if key in self.text_sessions:
                 # 已經在讀書中
                 start_time = self.text_sessions[key]
@@ -186,24 +206,74 @@ class Study(commands.Cog):
             else:
                 self.text_sessions[key] = now
                 db.save_session(message.guild.id, message.author.id, "text", now.isoformat())
+                if not hasattr(self, 'accumulated_text_time'):
+                    self.accumulated_text_time = {}
+                self.accumulated_text_time[key] = 0
                 await message.add_reaction("📚")
                 await message.reply(f"開始計時！加油！ 📖", mention_author=False)
+            return
+        
+        # 暫停讀書
+        if content in pause_keywords:
+            if key in self.text_sessions:
+                start = self.text_sessions.pop(key)
+                elapsed = int((now - start).total_seconds())
+                if not hasattr(self, 'accumulated_text_time'):
+                    self.accumulated_text_time = {}
+                accumulated = self.accumulated_text_time.get(key, 0) + elapsed
+                db.pause_session(message.guild.id, message.author.id, "text", now.isoformat(), accumulated)
+                db.delete_session(message.guild.id, message.author.id, "text")
+                await message.add_reaction("⏸️")
+                await message.reply(f"暫停了！已累積 {utils.format_hms(accumulated)} ⏸️", mention_author=False)
+            else:
+                paused = db.get_paused_session(message.guild.id, message.author.id, "text")
+                if paused:
+                    _, accumulated_secs = paused
+                    await message.reply(f"已暫停，累積時間 {utils.format_hms(accumulated_secs)}。打「繼續」繼續讀書。", mention_author=False)
+                else:
+                    await message.reply("你還沒開始讀書喔！", mention_author=False)
+            return
+        
+        # 繼續讀書（從暫停狀態）
+        if content in resume_keywords:
+            if key in self.text_sessions:
+                await message.reply("你已經在讀書中了！", mention_author=False)
+                return
+            paused = db.get_paused_session(message.guild.id, message.author.id, "text")
+            if not paused:
+                await message.reply("沒有暫停的計時。打「讀」開始新的計時。", mention_author=False)
+                return
+            # 恢復計時
+            pause_time_iso, accumulated_secs = paused
+            self.text_sessions[key] = now
+            db.delete_paused_session(message.guild.id, message.author.id, "text")
+            db.save_session(message.guild.id, message.author.id, "text", now.isoformat())
+            if not hasattr(self, 'accumulated_text_time'):
+                self.accumulated_text_time = {}
+            self.accumulated_text_time[key] = accumulated_secs
+            await message.add_reaction("📚")
+            await message.reply(f"繼續讀書！已累積 {utils.format_hms(accumulated_secs)} 📖", mention_author=False)
             return
         
         # 結束讀書
         if content in rest_keywords:
             if key in self.text_sessions:
                 start = self.text_sessions.pop(key)
+                elapsed = int((now - start).total_seconds())
+                if not hasattr(self, 'accumulated_text_time'):
+                    self.accumulated_text_time = {}
+                accumulated = self.accumulated_text_time.pop(key, 0) + elapsed
+                # 計算結束時間
                 self._add_interval(message.guild.id, message.author.id, start, now)
                 db.delete_session(message.guild.id, message.author.id, "text")
-                elapsed = int((now - start).total_seconds())
+                db.delete_paused_session(message.guild.id, message.author.id, "text")
                 await message.add_reaction("🎉")
                 await message.reply(
-                    f"辛苦了！這次讀書時間：{utils.format_hms(elapsed)} ☕",
+                    f"辛苦了！這次讀書時間：{utils.format_hms(elapsed)}（含暫停累積 {utils.format_hms(accumulated)}） ☕",
                     mention_author=False
                 )
             else:
-                await message.reply("你還沒開始讀書喔！先打「讀」開始計時。", mention_author=False)
+                await message.reply("還沒讀書就想休息喔，傻屌。滾去讀書吧!", mention_author=False)
             return
 
     @commands.Cog.listener()

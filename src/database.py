@@ -43,6 +43,17 @@ def ensure_db():
         PRIMARY KEY (guild_id, user_id, session_type)
     );
     """)
+    # 新增：暫停狀態追蹤
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS paused_sessions (
+        guild_id   INTEGER NOT NULL,
+        user_id    INTEGER NOT NULL,
+        session_type TEXT NOT NULL,     -- 'voice' 或 'text'
+        pause_time TEXT NOT NULL,       -- ISO format UTC datetime（暫停的時間點）
+        accumulated_seconds INTEGER DEFAULT 0,  -- 暫停前累積的秒數
+        PRIMARY KEY (guild_id, user_id, session_type)
+    );
+    """)
     con.commit()
     con.close()
 
@@ -204,3 +215,33 @@ def delete_session(guild_id: int, user_id: int, session_type: str):
 def get_all_active_sessions():
     """取得所有進行中的計時"""
     return db_exec("SELECT guild_id, user_id, session_type, start_time FROM active_sessions")
+
+# ------- 暫停功能 -------
+def pause_session(guild_id: int, user_id: int, session_type: str, pause_time_iso: str, accumulated_secs: int = 0):
+    """暫停進行中的計時"""
+    db_exec(
+        """
+        INSERT INTO paused_sessions(guild_id, user_id, session_type, pause_time, accumulated_seconds)
+        VALUES(?, ?, ?, ?, ?)
+        ON CONFLICT(guild_id, user_id, session_type)
+        DO UPDATE SET pause_time = excluded.pause_time, accumulated_seconds = excluded.accumulated_seconds
+        """,
+        (guild_id, user_id, session_type, pause_time_iso, accumulated_secs),
+        commit=True
+    )
+
+def get_paused_session(guild_id: int, user_id: int, session_type: str):
+    """取得暫停的計時資訊"""
+    res = db_exec(
+        "SELECT pause_time, accumulated_seconds FROM paused_sessions WHERE guild_id = ? AND user_id = ? AND session_type = ?",
+        (guild_id, user_id, session_type)
+    )
+    return res[0] if res else None
+
+def delete_paused_session(guild_id: int, user_id: int, session_type: str):
+    """刪除暫停的計時"""
+    db_exec(
+        "DELETE FROM paused_sessions WHERE guild_id = ? AND user_id = ? AND session_type = ?",
+        (guild_id, user_id, session_type),
+        commit=True
+    )
