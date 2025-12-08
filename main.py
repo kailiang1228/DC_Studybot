@@ -38,6 +38,11 @@ class StudyBot(commands.Bot):
     async def on_ready(self):
         print(f"✅ 已登入: {self.user} (ID: {self.user.id})")
         
+        # 恢復進行中的計時
+        study_cog = self.get_cog("Study")
+        if study_cog:
+            study_cog._restore_sessions()
+        
         # 同步指令
         if DEV_GUILD_ID:
             guild = discord.Object(id=DEV_GUILD_ID)

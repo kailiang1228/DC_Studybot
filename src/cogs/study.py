@@ -32,8 +32,24 @@ class Study(commands.Cog):
         # 啟動定時任務
         self.daily_announce_loop.start()
 
+    def _restore_sessions(self):
+        """從資料庫恢復進行中的計時"""
+        sessions = db.get_all_active_sessions()
+        for guild_id, user_id, session_type, start_time_iso in sessions:
+            try:
+                start_dt = datetime.fromisoformat(start_time_iso)
+                key = (guild_id, user_id)
+                if session_type == "voice":
+                    self.active_sessions[key] = start_dt
+                elif session_type == "text":
+                    self.text_sessions[key] = start_dt
+                print(f"✅ 恢復計時: {session_type} {guild_id}/{user_id} 開始於 {start_time_iso}")
+            except Exception as e:
+                print(f"❌ 恢復計時失敗: {e}")
+
     def cog_unload(self):
         self.daily_announce_loop.cancel()
+
 
     # ------- 輔助邏輯 -------
     def _add_interval(self, guild_id: int, user_id: int, start_dt: datetime, end_dt: datetime):
@@ -169,6 +185,7 @@ class Study(commands.Cog):
                 )
             else:
                 self.text_sessions[key] = now
+                db.save_session(message.guild.id, message.author.id, "text", now.isoformat())
                 await message.add_reaction("📚")
                 await message.reply(f"開始計時！加油！ 📖", mention_author=False)
             return
@@ -178,6 +195,7 @@ class Study(commands.Cog):
             if key in self.text_sessions:
                 start = self.text_sessions.pop(key)
                 self._add_interval(message.guild.id, message.author.id, start, now)
+                db.delete_session(message.guild.id, message.author.id, "text")
                 elapsed = int((now - start).total_seconds())
                 await message.add_reaction("🎉")
                 await message.reply(
@@ -202,6 +220,7 @@ class Study(commands.Cog):
         # 進入語音：開始計時
         if (not joined_before) and joined_after:
             self.active_sessions[key] = now
+            db.save_session(member.guild.id, member.id, "voice", now.isoformat())
             return
 
         # 離開語音：結束計時
@@ -209,6 +228,7 @@ class Study(commands.Cog):
             start = self.active_sessions.pop(key, None)
             if start:
                 self._add_interval(member.guild.id, member.id, start, now)
+            db.delete_session(member.guild.id, member.id, "voice")
             return
         # 在語音內換頻道：忽略
 
