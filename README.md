@@ -22,7 +22,6 @@ DC_StudyBot/
 ├── .gitignore           # Git 設定
 ├── config.json          # 關鍵字設定（可選）
 ├── study_time.db        # SQLite 資料庫（自動生成，勿上傳）
-├── DC_Studybot/         # GitHub 倉庫目錄
 └── src/
     ├── database.py      # 資料庫操作（時間記錄、暫停狀態）
     ├── utils.py         # 工具函式（時間格式、排行榜）
