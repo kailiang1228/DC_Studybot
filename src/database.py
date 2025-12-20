@@ -197,3 +197,7 @@ def get_paused_session(guild_id: int, user_id: int, session_type: str):
 
 def delete_paused_session(guild_id: int, user_id: int, session_type: str):
     db_exec("DELETE FROM paused_sessions WHERE guild_id = ? AND user_id = ? AND session_type = ?", (guild_id, user_id, session_type), commit=True)
+
+def get_all_active_sessions():
+    """取得所有進行中的計時（用於機器人重啟時恢復狀態）"""
+    return db_exec("SELECT guild_id, user_id, session_type, start_time FROM active_sessions")
