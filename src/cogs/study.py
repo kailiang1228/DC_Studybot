@@ -30,7 +30,7 @@ class Study(commands.Cog):
         self.text_sessions: dict[tuple[int, int], datetime] = {}    # 文字頻道觸發的計時 (guild_id, user_id) -> start UTC
         self.announce_channel_id = int(os.getenv("ANNOUNCE_CHANNEL_ID", "0"))
         self.config = load_config()
-        print("[LOG] StudyCog __init__ 啟動，準備啟動 daily_announce_loop")
+        
         # 啟動定時任務
         self.daily_announce_loop.start()
 
@@ -78,7 +78,6 @@ class Study(commands.Cog):
             cur_start = cur_end
 
     async def _perform_daily_cut_and_announce(self):
-        print(f"[LOG] 進入 _perform_daily_cut_and_announce {datetime.now()} (UTC)")
         # 1) 把仍在語音的人，06:00 前那段切到「昨天學習日」
         now = datetime.now(timezone.utc)
         now_local = now.astimezone(utils.TW_TZ)
@@ -307,16 +306,12 @@ class Study(commands.Cog):
     @tasks.loop(minutes=1)
     async def daily_announce_loop(self):
         now_local = datetime.now(utils.TW_TZ)
-        print(f"[LOG] daily_announce_loop tick: {now_local.isoformat()} (TW_TZ)")
         if now_local.hour == 6 and now_local.minute == 0:
-            print(f"[LOG] daily_announce_loop 命中 6:00，呼叫 _perform_daily_cut_and_announce")
             await self._perform_daily_cut_and_announce()
 
     @daily_announce_loop.before_loop
     async def _before_daily_announce(self):
-        print("[LOG] 等待 bot ready (before daily_announce_loop)")
         await self.bot.wait_until_ready()
-        print("[LOG] bot 已 ready，daily_announce_loop 即將啟動")
 
     # ------- Slash Commands -------
     @app_commands.command(name="today", description="顯示今天（06:00~隔日06:00）的讀書時間排行")
